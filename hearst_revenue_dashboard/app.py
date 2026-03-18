@@ -677,7 +677,7 @@ st.markdown(
 
 
 def _highlight_anomaly_row(row):
-    if row["status"] == "Open":
+    if row.get("Status", row.get("status", "")) == "Open":
         return ["background-color: #FFF5F5; color: #374151"] * len(row)
     return [""] * len(row)
 
