@@ -3,12 +3,21 @@ SQL query functions for the Hearst Revenue Operations Dashboard.
 All data retrieval uses explicit SQL executed against the SQLite database.
 Results are returned as pandas DataFrames via pd.read_sql_query().
 No pandas aggregations — SQL does all the heavy lifting.
+Each function creates its own fresh connection to avoid SQLite
+serialisation errors on Streamlit Cloud.
 """
 
+import sys
+import os
 import pandas as pd
+import streamlit as st
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.generate_data import get_database_connection
 
 
-def get_portfolio_kpis(conn) -> pd.DataFrame:
+@st.cache_data
+def get_portfolio_kpis() -> pd.DataFrame:
     """
     Single-row KPI summary across all brands and months for FY2024.
     Returns: total_revenue, total_available_impressions, total_sold_impressions,
@@ -34,10 +43,14 @@ def get_portfolio_kpis(conn) -> pd.DataFrame:
         )                                   AS weighted_avg_cpm
     FROM brand_inventory
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_brand_revenue_by_channel(conn) -> pd.DataFrame:
+@st.cache_data
+def get_brand_revenue_by_channel() -> pd.DataFrame:
     """
     Revenue and performance metrics grouped by brand and channel.
     Used for the brand comparison grouped bar chart.
@@ -60,10 +73,14 @@ def get_brand_revenue_by_channel(conn) -> pd.DataFrame:
     GROUP BY brand, channel
     ORDER BY brand, total_revenue DESC
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_monthly_revenue_trend(conn) -> pd.DataFrame:
+@st.cache_data
+def get_monthly_revenue_trend() -> pd.DataFrame:
     """
     Total portfolio revenue by month for the trend line chart.
     Returns: month, total_revenue.
@@ -76,10 +93,14 @@ def get_monthly_revenue_trend(conn) -> pd.DataFrame:
     GROUP BY month
     ORDER BY month
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_advertiser_spend_trends(conn) -> pd.DataFrame:
+@st.cache_data
+def get_advertiser_spend_trends() -> pd.DataFrame:
     """
     Monthly spend by vertical across the portfolio.
     concentration_flag = 1 when any single vertical exceeds 35% of
@@ -125,10 +146,14 @@ def get_advertiser_spend_trends(conn) -> pd.DataFrame:
     JOIN concentration_check cc ON mv.month = cc.month
     ORDER BY mv.month, mv.vertical
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_concentration_risk(conn) -> pd.DataFrame:
+@st.cache_data
+def get_concentration_risk() -> pd.DataFrame:
     """
     Brands where the top 2 advertiser verticals account for more than
     60% of that brand's total annual spend.
@@ -179,16 +204,20 @@ def get_concentration_risk(conn) -> pd.DataFrame:
     HAVING top2_pct > 60
     ORDER BY top2_pct DESC
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_pitch_to_pay_funnel(conn) -> pd.DataFrame:
+@st.cache_data
+def get_pitch_to_pay_funnel() -> pd.DataFrame:
     """
     Funnel stages aggregated across all brands and months.
     Includes conversion_rate from the prior stage (NULL for first stage)
     and revenue_leakage as value lost entering each stage.
     Returns: stage, total_deals, total_value, total_leakage, conversion_rate.
-    Stages ordered CRM Opportunity → Reconciled.
+    Stages ordered CRM Opportunity -> Reconciled.
     """
     sql = """
     WITH stage_agg AS (
@@ -221,10 +250,14 @@ def get_pitch_to_pay_funnel(conn) -> pd.DataFrame:
     FROM stage_agg
     ORDER BY stage_order
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_qa_summary(conn) -> pd.DataFrame:
+@st.cache_data
+def get_qa_summary() -> pd.DataFrame:
     """
     System health summary per source: anomaly counts, average completeness,
     average revenue variance, and data freshness.
@@ -246,10 +279,14 @@ def get_qa_summary(conn) -> pd.DataFrame:
     GROUP BY source
     ORDER BY anomalies_detected DESC
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_revenue_reconciliation(conn) -> pd.DataFrame:
+@st.cache_data
+def get_revenue_reconciliation() -> pd.DataFrame:
     """
     Monthly cross-system revenue totals (Salesforce, AdPoint, GAM) and the
     relative reconciliation gap between the highest and lowest source.
@@ -281,14 +318,14 @@ def get_revenue_reconciliation(conn) -> pd.DataFrame:
     FROM monthly_sums
     ORDER BY month
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-# ---------------------------------------------------------------------------
-# Supporting queries used by app.py sections
-# ---------------------------------------------------------------------------
-
-def get_brand_summary_table(conn) -> pd.DataFrame:
+@st.cache_data
+def get_brand_summary_table() -> pd.DataFrame:
     """
     Per-brand summary with total revenue, fill rate, avg CPM, and top channel
     by revenue. Used for the Section 2 styled summary table.
@@ -329,10 +366,14 @@ def get_brand_summary_table(conn) -> pd.DataFrame:
     GROUP BY bi.brand, cr.channel
     ORDER BY total_revenue DESC
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
 
 
-def get_anomaly_log(conn) -> pd.DataFrame:
+@st.cache_data
+def get_anomaly_log() -> pd.DataFrame:
     """
     All flagged anomaly records with derived issue type and status.
     issue_type: 'High Variance' / 'Low Completeness' / 'Variance + Completeness'
@@ -362,4 +403,7 @@ def get_anomaly_log(conn) -> pd.DataFrame:
         CASE WHEN month >= '2024-09' THEN 0 ELSE 1 END,
         variance_pct DESC
     """
-    return pd.read_sql_query(sql, conn)
+    conn = get_database_connection()
+    df = pd.read_sql_query(sql, conn)
+    conn.close()
+    return df
