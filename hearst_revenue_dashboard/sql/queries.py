@@ -1,265 +1,365 @@
 """
-Pre-built SQL queries for the Hearst Revenue Operations Dashboard.
-Each function returns a SQL string (and optionally parameters) ready
-to be executed against the SQLite connection from generate_data.py.
+SQL query functions for the Hearst Revenue Operations Dashboard.
+All data retrieval uses explicit SQL executed against the SQLite database.
+Results are returned as pandas DataFrames via pd.read_sql_query().
+No pandas aggregations — SQL does all the heavy lifting.
 """
 
-
-# ---------------------------------------------------------------------------
-# brand_inventory queries
-# ---------------------------------------------------------------------------
-
-INVENTORY_SUMMARY_BY_BRAND = """
-SELECT
-    brand,
-    SUM(revenue)                                        AS total_revenue,
-    ROUND(AVG(fill_rate) * 100, 2)                      AS avg_fill_rate_pct,
-    ROUND(AVG(cpm), 2)                                  AS avg_cpm,
-    SUM(available_impressions)                          AS total_available_imps,
-    SUM(sold_impressions)                               AS total_sold_imps
-FROM brand_inventory
-GROUP BY brand
-ORDER BY total_revenue DESC;
-"""
-
-INVENTORY_BY_CHANNEL = """
-SELECT
-    channel,
-    SUM(revenue)                                        AS total_revenue,
-    ROUND(AVG(fill_rate) * 100, 2)                      AS avg_fill_rate_pct,
-    ROUND(AVG(cpm), 2)                                  AS avg_cpm
-FROM brand_inventory
-GROUP BY channel
-ORDER BY total_revenue DESC;
-"""
-
-MONTHLY_REVENUE_TREND = """
-SELECT
-    month,
-    SUM(revenue)                                        AS portfolio_revenue,
-    ROUND(AVG(fill_rate) * 100, 2)                      AS avg_fill_rate_pct
-FROM brand_inventory
-GROUP BY month
-ORDER BY month;
-"""
-
-REVENUE_BY_BRAND_CHANNEL = """
-SELECT
-    brand,
-    channel,
-    ROUND(SUM(revenue), 2)                              AS total_revenue,
-    ROUND(AVG(cpm), 2)                                  AS avg_cpm,
-    ROUND(AVG(fill_rate) * 100, 2)                      AS avg_fill_rate_pct
-FROM brand_inventory
-GROUP BY brand, channel
-ORDER BY brand, total_revenue DESC;
-"""
-
-QUARTERLY_REVENUE = """
-SELECT
-    brand,
-    CASE
-        WHEN SUBSTR(month, 6, 2) IN ('01','02','03') THEN 'Q1'
-        WHEN SUBSTR(month, 6, 2) IN ('04','05','06') THEN 'Q2'
-        WHEN SUBSTR(month, 6, 2) IN ('07','08','09') THEN 'Q3'
-        ELSE 'Q4'
-    END                                                 AS quarter,
-    ROUND(SUM(revenue), 2)                              AS total_revenue
-FROM brand_inventory
-GROUP BY brand, quarter
-ORDER BY brand, quarter;
-"""
+import pandas as pd
 
 
-# ---------------------------------------------------------------------------
-# advertiser_spend queries
-# ---------------------------------------------------------------------------
-
-SPEND_BY_VERTICAL = """
-SELECT
-    vertical,
-    ROUND(SUM(spend_amount), 2)                         AS total_spend,
-    ROUND(AVG(spend_amount), 2)                         AS avg_monthly_spend
-FROM advertiser_spend
-GROUP BY vertical
-ORDER BY total_spend DESC;
-"""
-
-SPEND_BY_BRAND_VERTICAL = """
-SELECT
-    brand,
-    vertical,
-    ROUND(SUM(spend_amount), 2)                         AS total_spend
-FROM advertiser_spend
-GROUP BY brand, vertical
-ORDER BY brand, total_spend DESC;
-"""
-
-MONTHLY_PORTFOLIO_SPEND = """
-SELECT
-    month,
-    ROUND(SUM(spend_amount), 2)                         AS total_spend
-FROM advertiser_spend
-GROUP BY month
-ORDER BY month;
-"""
-
-TOP_VERTICALS_BY_BRAND = """
-SELECT
-    brand,
-    vertical,
-    ROUND(SUM(spend_amount), 2)                         AS total_spend,
-    ROUND(
-        100.0 * SUM(spend_amount) /
-        SUM(SUM(spend_amount)) OVER (PARTITION BY brand),
-        2
-    )                                                   AS share_of_brand_pct
-FROM advertiser_spend
-GROUP BY brand, vertical
-ORDER BY brand, total_spend DESC;
-"""
+def get_portfolio_kpis(conn) -> pd.DataFrame:
+    """
+    Single-row KPI summary across all brands and months for FY2024.
+    Returns: total_revenue, total_available_impressions, total_sold_impressions,
+             portfolio_fill_rate, weighted_avg_cpm.
+    """
+    sql = """
+    SELECT
+        ROUND(SUM(revenue), 2)
+                                            AS total_revenue,
+        SUM(available_impressions)
+                                            AS total_available_impressions,
+        SUM(sold_impressions)
+                                            AS total_sold_impressions,
+        ROUND(
+            100.0 * CAST(SUM(sold_impressions) AS FLOAT)
+            / SUM(available_impressions),
+            2
+        )                                   AS portfolio_fill_rate,
+        ROUND(
+            SUM(revenue)
+            / (CAST(SUM(sold_impressions) AS FLOAT) / 1000.0),
+            2
+        )                                   AS weighted_avg_cpm
+    FROM brand_inventory
+    """
+    return pd.read_sql_query(sql, conn)
 
 
-# ---------------------------------------------------------------------------
-# pitch_to_pay queries
-# ---------------------------------------------------------------------------
-
-PIPELINE_FUNNEL_SUMMARY = """
-SELECT
-    stage,
-    SUM(deal_count)                                     AS total_deals,
-    ROUND(SUM(deal_value), 2)                           AS total_value,
-    ROUND(SUM(revenue_leakage), 2)                      AS total_leakage
-FROM pitch_to_pay
-GROUP BY stage
-ORDER BY
-    CASE stage
-        WHEN 'CRM Opportunity'      THEN 1
-        WHEN 'Order Created'        THEN 2
-        WHEN 'Campaign Trafficked'  THEN 3
-        WHEN 'Delivered'            THEN 4
-        WHEN 'Billed'               THEN 5
-        WHEN 'Reconciled'           THEN 6
-    END;
-"""
-
-LEAKAGE_BY_BRAND = """
-SELECT
-    brand,
-    ROUND(SUM(revenue_leakage), 2)                      AS total_leakage,
-    ROUND(
-        100.0 * SUM(revenue_leakage) /
-        SUM(SUM(revenue_leakage)) OVER (),
-        2
-    )                                                   AS leakage_share_pct
-FROM pitch_to_pay
-GROUP BY brand
-ORDER BY total_leakage DESC;
-"""
-
-CONVERSION_RATES_BY_BRAND = """
-WITH stage_vals AS (
+def get_brand_revenue_by_channel(conn) -> pd.DataFrame:
+    """
+    Revenue and performance metrics grouped by brand and channel.
+    Used for the brand comparison grouped bar chart.
+    Returns: brand, channel, total_revenue, total_sold_impressions,
+             avg_cpm, avg_fill_rate.
+    """
+    sql = """
     SELECT
         brand,
-        stage,
-        AVG(deal_value)                                 AS avg_value
-    FROM pitch_to_pay
-    GROUP BY brand, stage
-)
-SELECT
-    brand,
-    ROUND(
-        100.0 *
-        MAX(CASE WHEN stage = 'Reconciled'      THEN avg_value ELSE NULL END) /
-        MAX(CASE WHEN stage = 'CRM Opportunity' THEN avg_value ELSE NULL END),
-        2
-    )                                                   AS end_to_end_conversion_pct
-FROM stage_vals
-GROUP BY brand
-ORDER BY end_to_end_conversion_pct DESC;
-"""
-
-MONTHLY_PIPELINE_VALUE = """
-SELECT
-    month,
-    stage,
-    ROUND(SUM(deal_value), 2)                           AS total_value
-FROM pitch_to_pay
-WHERE stage IN ('CRM Opportunity', 'Reconciled')
-GROUP BY month, stage
-ORDER BY month, stage;
-"""
+        channel,
+        ROUND(SUM(revenue), 2)              AS total_revenue,
+        SUM(sold_impressions)               AS total_sold_impressions,
+        ROUND(AVG(cpm), 2)                  AS avg_cpm,
+        ROUND(
+            100.0 * CAST(SUM(sold_impressions) AS FLOAT)
+            / SUM(available_impressions),
+            2
+        )                                   AS avg_fill_rate
+    FROM brand_inventory
+    GROUP BY brand, channel
+    ORDER BY brand, total_revenue DESC
+    """
+    return pd.read_sql_query(sql, conn)
 
 
-# ---------------------------------------------------------------------------
-# data_qa_status queries
-# ---------------------------------------------------------------------------
+def get_monthly_revenue_trend(conn) -> pd.DataFrame:
+    """
+    Total portfolio revenue by month for the trend line chart.
+    Returns: month, total_revenue.
+    """
+    sql = """
+    SELECT
+        month,
+        ROUND(SUM(revenue), 2)              AS total_revenue
+    FROM brand_inventory
+    GROUP BY month
+    ORDER BY month
+    """
+    return pd.read_sql_query(sql, conn)
 
-ANOMALY_SUMMARY = """
-SELECT
-    source,
-    brand,
-    month,
-    completeness_pct,
-    variance_pct,
-    anomaly_flag,
-    last_refresh
-FROM data_qa_status
-WHERE anomaly_flag = 1
-ORDER BY variance_pct DESC;
-"""
 
-STALE_SOURCES = """
-SELECT
-    source,
-    brand,
-    month,
-    last_refresh,
-    ROUND(
-        (JULIANDAY('now') - JULIANDAY(last_refresh)) * 24,
-        1
-    )                                                   AS hours_since_refresh
-FROM data_qa_status
-WHERE (JULIANDAY('now') - JULIANDAY(last_refresh)) * 24 > 24
-ORDER BY hours_since_refresh DESC;
-"""
-
-COMPLETENESS_BY_SOURCE = """
-SELECT
-    source,
-    ROUND(AVG(completeness_pct), 2)                     AS avg_completeness_pct,
-    SUM(CASE WHEN completeness_pct < 95 THEN 1 ELSE 0 END) AS low_completeness_months
-FROM data_qa_status
-GROUP BY source
-ORDER BY avg_completeness_pct DESC;
-"""
-
-REVENUE_VARIANCE_HEATMAP = """
-SELECT
-    source,
-    brand,
-    ROUND(AVG(variance_pct), 4)                         AS avg_variance_pct,
-    MAX(variance_pct)                                   AS max_variance_pct,
-    SUM(anomaly_flag)                                   AS anomaly_count
-FROM data_qa_status
-GROUP BY source, brand
-ORDER BY avg_variance_pct DESC;
-"""
-
-SYSTEM_HEALTH_OVERVIEW = """
-SELECT
-    source,
-    COUNT(*)                                            AS total_records,
-    ROUND(AVG(completeness_pct), 2)                     AS avg_completeness_pct,
-    ROUND(AVG(variance_pct), 4)                         AS avg_variance_pct,
-    SUM(anomaly_flag)                                   AS total_anomalies,
-    SUM(
+def get_advertiser_spend_trends(conn) -> pd.DataFrame:
+    """
+    Monthly spend by vertical across the portfolio.
+    concentration_flag = 1 when any single vertical exceeds 35% of
+    total portfolio spend in that month.
+    Returns: month, vertical, total_spend, concentration_flag.
+    """
+    sql = """
+    WITH monthly_totals AS (
+        SELECT
+            month,
+            SUM(spend_amount)               AS month_total
+        FROM advertiser_spend
+        GROUP BY month
+    ),
+    monthly_vertical AS (
+        SELECT
+            a.month,
+            a.vertical,
+            ROUND(SUM(a.spend_amount), 2)   AS total_spend,
+            mt.month_total
+        FROM advertiser_spend a
+        JOIN monthly_totals mt ON a.month = mt.month
+        GROUP BY a.month, a.vertical
+    ),
+    concentration_check AS (
+        SELECT
+            month,
+            MAX(
+                CAST(total_spend AS FLOAT) / month_total
+            )                               AS max_vertical_share
+        FROM monthly_vertical
+        GROUP BY month
+    )
+    SELECT
+        mv.month,
+        mv.vertical,
+        mv.total_spend,
         CASE
-            WHEN (JULIANDAY('now') - JULIANDAY(last_refresh)) * 24 > 24
-            THEN 1 ELSE 0
-        END
-    )                                                   AS stale_feeds
-FROM data_qa_status
-GROUP BY source
-ORDER BY total_anomalies DESC;
-"""
+            WHEN cc.max_vertical_share > 0.35 THEN 1
+            ELSE 0
+        END                                 AS concentration_flag
+    FROM monthly_vertical mv
+    JOIN concentration_check cc ON mv.month = cc.month
+    ORDER BY mv.month, mv.vertical
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+def get_concentration_risk(conn) -> pd.DataFrame:
+    """
+    Brands where the top 2 advertiser verticals account for more than
+    60% of that brand's total annual spend.
+    Returns: brand, top_vertical_1, top_vertical_2, top2_pct, brand_total.
+    """
+    sql = """
+    WITH brand_vertical_spend AS (
+        SELECT
+            brand,
+            vertical,
+            SUM(spend_amount)               AS total_spend
+        FROM advertiser_spend
+        GROUP BY brand, vertical
+    ),
+    brand_total AS (
+        SELECT
+            brand,
+            SUM(total_spend)                AS brand_total
+        FROM brand_vertical_spend
+        GROUP BY brand
+    ),
+    ranked AS (
+        SELECT
+            bvs.brand,
+            bvs.vertical,
+            bvs.total_spend,
+            bt.brand_total,
+            ROW_NUMBER() OVER (
+                PARTITION BY bvs.brand
+                ORDER BY bvs.total_spend DESC
+            )                               AS rnk
+        FROM brand_vertical_spend bvs
+        JOIN brand_total bt ON bvs.brand = bt.brand
+    )
+    SELECT
+        brand,
+        MAX(brand_total)                    AS brand_total,
+        SUM(total_spend)                    AS top2_spend,
+        ROUND(
+            100.0 * SUM(total_spend) / MAX(brand_total),
+            2
+        )                                   AS top2_pct,
+        MAX(CASE WHEN rnk = 1 THEN vertical END) AS top_vertical_1,
+        MAX(CASE WHEN rnk = 2 THEN vertical END) AS top_vertical_2
+    FROM ranked
+    WHERE rnk <= 2
+    GROUP BY brand
+    HAVING top2_pct > 60
+    ORDER BY top2_pct DESC
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+def get_pitch_to_pay_funnel(conn) -> pd.DataFrame:
+    """
+    Funnel stages aggregated across all brands and months.
+    Includes conversion_rate from the prior stage (NULL for first stage)
+    and revenue_leakage as value lost entering each stage.
+    Returns: stage, total_deals, total_value, total_leakage, conversion_rate.
+    Stages ordered CRM Opportunity → Reconciled.
+    """
+    sql = """
+    WITH stage_agg AS (
+        SELECT
+            stage,
+            SUM(deal_count)                 AS total_deals,
+            ROUND(SUM(deal_value), 2)       AS total_value,
+            ROUND(SUM(revenue_leakage), 2)  AS total_leakage,
+            CASE stage
+                WHEN 'CRM Opportunity'      THEN 1
+                WHEN 'Order Created'        THEN 2
+                WHEN 'Campaign Trafficked'  THEN 3
+                WHEN 'Delivered'            THEN 4
+                WHEN 'Billed'               THEN 5
+                WHEN 'Reconciled'           THEN 6
+            END                             AS stage_order
+        FROM pitch_to_pay
+        GROUP BY stage
+    )
+    SELECT
+        stage,
+        total_deals,
+        total_value,
+        total_leakage,
+        ROUND(
+            100.0 * total_value
+            / LAG(total_value) OVER (ORDER BY stage_order),
+            2
+        )                                   AS conversion_rate
+    FROM stage_agg
+    ORDER BY stage_order
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+def get_qa_summary(conn) -> pd.DataFrame:
+    """
+    System health summary per source: anomaly counts, average completeness,
+    average revenue variance, and data freshness.
+    Returns: source, anomalies_detected, avg_completeness_pct,
+             avg_variance_pct, most_recent_refresh, hours_since_last_refresh.
+    """
+    sql = """
+    SELECT
+        source,
+        SUM(anomaly_flag)                   AS anomalies_detected,
+        ROUND(AVG(completeness_pct), 2)     AS avg_completeness_pct,
+        ROUND(AVG(variance_pct), 4)         AS avg_variance_pct,
+        MAX(last_refresh)                   AS most_recent_refresh,
+        ROUND(
+            (JULIANDAY('now') - JULIANDAY(MAX(last_refresh))) * 24,
+            1
+        )                                   AS hours_since_last_refresh
+    FROM data_qa_status
+    GROUP BY source
+    ORDER BY anomalies_detected DESC
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+def get_revenue_reconciliation(conn) -> pd.DataFrame:
+    """
+    Monthly cross-system revenue totals (Salesforce, AdPoint, GAM) and the
+    relative reconciliation gap between the highest and lowest source.
+    reconciliation_gap is expressed as a percentage of the three-way average.
+    Returns: month, revenue_salesforce, revenue_adpoint, revenue_gam,
+             reconciliation_gap.
+    """
+    sql = """
+    WITH monthly_sums AS (
+        SELECT
+            month,
+            SUM(revenue_salesforce)         AS rev_sf,
+            SUM(revenue_adpoint)            AS rev_ap,
+            SUM(revenue_gam)                AS rev_gam
+        FROM data_qa_status
+        GROUP BY month
+    )
+    SELECT
+        month,
+        ROUND(rev_sf, 2)                    AS revenue_salesforce,
+        ROUND(rev_ap, 2)                    AS revenue_adpoint,
+        ROUND(rev_gam, 2)                   AS revenue_gam,
+        ROUND(
+            100.0
+            * (MAX(rev_sf, rev_ap, rev_gam) - MIN(rev_sf, rev_ap, rev_gam))
+            / ((rev_sf + rev_ap + rev_gam) / 3.0),
+            2
+        )                                   AS reconciliation_gap
+    FROM monthly_sums
+    ORDER BY month
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+# ---------------------------------------------------------------------------
+# Supporting queries used by app.py sections
+# ---------------------------------------------------------------------------
+
+def get_brand_summary_table(conn) -> pd.DataFrame:
+    """
+    Per-brand summary with total revenue, fill rate, avg CPM, and top channel
+    by revenue. Used for the Section 2 styled summary table.
+    """
+    sql = """
+    WITH channel_ranked AS (
+        SELECT
+            brand,
+            channel,
+            SUM(revenue)                    AS ch_revenue,
+            ROW_NUMBER() OVER (
+                PARTITION BY brand
+                ORDER BY SUM(revenue) DESC
+            )                               AS rnk
+        FROM brand_inventory
+        GROUP BY brand, channel
+    )
+    SELECT
+        bi.brand,
+        ROUND(SUM(bi.revenue), 2)           AS total_revenue,
+        ROUND(
+            100.0 * CAST(SUM(bi.sold_impressions) AS FLOAT)
+            / SUM(bi.available_impressions),
+            2
+        )                                   AS fill_rate,
+        ROUND(
+            SUM(bi.revenue)
+            / (CAST(SUM(bi.sold_impressions) AS FLOAT) / 1000.0),
+            2
+        )                                   AS avg_cpm,
+        cr.channel                          AS top_channel
+    FROM brand_inventory bi
+    JOIN (
+        SELECT brand, channel
+        FROM channel_ranked
+        WHERE rnk = 1
+    ) cr ON bi.brand = cr.brand
+    GROUP BY bi.brand, cr.channel
+    ORDER BY total_revenue DESC
+    """
+    return pd.read_sql_query(sql, conn)
+
+
+def get_anomaly_log(conn) -> pd.DataFrame:
+    """
+    All flagged anomaly records with derived issue type and status.
+    issue_type: 'High Variance' / 'Low Completeness' / 'Variance + Completeness'
+    status: 'Open' for months >= 2024-09, 'Resolved' for earlier months.
+    """
+    sql = """
+    SELECT
+        source,
+        brand,
+        month,
+        CASE
+            WHEN variance_pct > 5 AND completeness_pct < 95
+                THEN 'Variance + Completeness'
+            WHEN variance_pct > 5
+                THEN 'High Variance'
+            ELSE 'Low Completeness'
+        END                                 AS issue_type,
+        ROUND(variance_pct, 2)              AS variance_pct,
+        ROUND(completeness_pct, 2)          AS completeness_pct,
+        CASE
+            WHEN month >= '2024-09' THEN 'Open'
+            ELSE 'Resolved'
+        END                                 AS status
+    FROM data_qa_status
+    WHERE anomaly_flag = 1
+    ORDER BY
+        CASE WHEN month >= '2024-09' THEN 0 ELSE 1 END,
+        variance_pct DESC
+    """
+    return pd.read_sql_query(sql, conn)
