@@ -17,7 +17,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
 
-from data.generate_data import get_database_connection
 from sql.queries import (
     get_portfolio_kpis,
     get_brand_revenue_by_channel,
@@ -197,13 +196,6 @@ header    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Data load ──────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Initialising database…")
-def load_db():
-    return get_database_connection()
-
-conn = load_db()
-
 # ── Plotly defaults ────────────────────────────────────────────────────────
 CHANNEL_COLORS = {
     "Direct-Sold":                "#1B3A6B",
@@ -260,7 +252,7 @@ st.markdown('<hr class="blue-divider">', unsafe_allow_html=True)
 st.markdown('<div class="section-header">Portfolio Performance — FY2024</div>',
             unsafe_allow_html=True)
 
-kpis = get_portfolio_kpis(conn).iloc[0]
+kpis = get_portfolio_kpis().iloc[0]
 
 total_rev   = kpis["total_revenue"]
 fill_rate   = kpis["portfolio_fill_rate"]
@@ -310,8 +302,8 @@ for col, kpi in zip(kpi_cols, kpi_defs):
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Monthly revenue trend — clean navy line, no gridlines
-trend_df = get_monthly_revenue_trend(conn)
+# Monthly revenue trend
+trend_df = get_monthly_revenue_trend()
 fig_trend = go.Figure()
 fig_trend.add_trace(go.Scatter(
     x=trend_df["month"],
@@ -344,7 +336,7 @@ st.plotly_chart(fig_trend, use_container_width=True)
 st.markdown('<div class="section-header">Brand Performance by Channel</div>',
             unsafe_allow_html=True)
 
-brand_channel_df = get_brand_revenue_by_channel(conn)
+brand_channel_df = get_brand_revenue_by_channel()
 
 fig_grouped = px.bar(
     brand_channel_df,
@@ -367,7 +359,7 @@ fig_grouped.update_layout(
 st.plotly_chart(fig_grouped, use_container_width=True)
 
 # Summary table with conditional fill-rate formatting
-summary_df = get_brand_summary_table(conn)
+summary_df = get_brand_summary_table()
 
 display_df = summary_df.rename(columns={
     "brand":         "Brand",
@@ -408,8 +400,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-spend_trends_df  = get_advertiser_spend_trends(conn)
-concentration_df = get_concentration_risk(conn)
+spend_trends_df  = get_advertiser_spend_trends()
+concentration_df = get_concentration_risk()
 
 col_left, col_right = st.columns([3, 2])
 
@@ -469,7 +461,7 @@ with col_right:
         )
         st.markdown(
             f'<div class="risk-box">'
-            f'<div class="risk-title">⚠ Concentration Risk Alert</div>'
+            f'<div class="risk-title">&#9888; Concentration Risk Alert</div>'
             f'{risk_items_html}'
             f'<div style="color:#92400E;font-size:12px;margin-top:8px;">'
             f'Top 2 verticals exceed 60% of brand annual spend.</div>'
@@ -490,9 +482,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-funnel_df = get_pitch_to_pay_funnel(conn)
+funnel_df = get_pitch_to_pay_funnel()
 
-# Horizontal funnel chart
 fig_funnel = go.Figure(go.Funnel(
     y=funnel_df["stage"],
     x=funnel_df["total_value"],
@@ -538,7 +529,7 @@ for i in range(1, len(funnel_df)):
     value_lost = prev["total_value"] - curr["total_value"]
     leakage_pct = (value_lost / prev["total_value"] * 100) if prev["total_value"] else 0
     leakage_rows.append({
-        "Stage Transition": f"{prev['stage']}  →  {curr['stage']}",
+        "Stage Transition": f"{prev['stage']}  ->  {curr['stage']}",
         "Deals Lost": deals_lost,
         "Value Lost ($M)": round(value_lost / 1_000_000, 2),
         "Leakage %": round(leakage_pct, 2),
@@ -546,7 +537,7 @@ for i in range(1, len(funnel_df)):
 
 leakage_table = pd.DataFrame(leakage_rows)
 max_leakage_idx = leakage_table["Value Lost ($M)"].idxmax()
-worst_stage = leakage_table.loc[max_leakage_idx, "Stage Transition"].split("→")[0].strip()
+worst_stage = leakage_table.loc[max_leakage_idx, "Stage Transition"].split("->")[0].strip()
 total_leakage_m = leakage_table["Value Lost ($M)"].sum()
 
 
@@ -578,9 +569,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-qa_df   = get_qa_summary(conn)
-recon_df = get_revenue_reconciliation(conn)
-anom_df  = get_anomaly_log(conn)
+qa_df    = get_qa_summary()
+recon_df = get_revenue_reconciliation()
+anom_df  = get_anomaly_log()
 
 # ── Three status cards ─────────────────────────────────────────────────────
 qa_cols = st.columns(3)
@@ -591,27 +582,23 @@ for col, (_, row) in zip(qa_cols, qa_df.iterrows()):
     variance     = row["avg_variance_pct"]
     hours_stale  = row["hours_since_last_refresh"]
 
-    # Completeness badge
     if completeness >= 95:
-        comp_badge = '<span class="badge badge-green">✓ {:.1f}%</span>'.format(completeness)
+        comp_badge = '<span class="badge badge-green">&#10003; {:.1f}%</span>'.format(completeness)
     elif completeness >= 90:
-        comp_badge = '<span class="badge badge-yellow">⚠ {:.1f}%</span>'.format(completeness)
+        comp_badge = '<span class="badge badge-yellow">&#9888; {:.1f}%</span>'.format(completeness)
     else:
-        comp_badge = '<span class="badge badge-red">✗ {:.1f}%</span>'.format(completeness)
+        comp_badge = '<span class="badge badge-red">&#10007; {:.1f}%</span>'.format(completeness)
 
-    # Anomaly badge
     if anomalies == 0:
         anom_badge = '<span class="badge badge-green">0 anomalies</span>'
     else:
         anom_badge = '<span class="badge badge-red">{} anomalies</span>'.format(anomalies)
 
-    # Freshness badge
     if hours_stale < 24:
         fresh_badge = '<span class="badge badge-green">{:.1f}h ago</span>'.format(hours_stale)
     else:
-        fresh_badge = '<span class="badge badge-red">{:.1f}h ago ⚠</span>'.format(hours_stale)
+        fresh_badge = '<span class="badge badge-red">{:.1f}h ago &#9888;</span>'.format(hours_stale)
 
-    # Overall status
     if completeness >= 95 and anomalies == 0 and hours_stale < 24:
         status_badge = '<span class="badge badge-green" style="font-size:13px;padding:4px 14px;">HEALTHY</span>'
     elif completeness < 90 or hours_stale > 48:
@@ -675,7 +662,7 @@ st.dataframe(
 )
 st.markdown(
     '<div style="font-size:12px;color:#6B7280;margin-top:4px;">'
-    '⚠ Reconciliation gaps &gt;3% trigger Finance review workflow.</div>',
+    '&#9888; Reconciliation gaps &gt;3% trigger Finance review workflow.</div>',
     unsafe_allow_html=True,
 )
 
@@ -721,12 +708,12 @@ st.markdown(
 
 INSIGHTS = [
     {
-        "icon": "📈",
+        "icon": "&#128200;",
         "border_color": "#28A745",
         "action_bg": "#F0FFF4",
         "title": "Fashion Inventory Yield Gap",
         "body": (
-            "Harper's BAZAAR and ELLE are generating programmatic CPMs 18–22% above "
+            "Harper's BAZAAR and ELLE are generating programmatic CPMs 18-22% above "
             "the portfolio average on fashion and beauty placements, but floor prices "
             "on these placements are set at the portfolio median. This represents an "
             "untapped yield opportunity on Hearst's highest-value inventory."
@@ -734,12 +721,12 @@ INSIGHTS = [
         "action": (
             "Test a 15% floor price increase on fashion and beauty placements across ELLE "
             "and Harper's BAZAAR. Based on current impression volumes, this could generate "
-            "an estimated $1.2M–$1.8M in incremental annual revenue without reducing fill "
+            "an estimated $1.2M-$1.8M in incremental annual revenue without reducing fill "
             "rates materially."
         ),
     },
     {
-        "icon": "⚠️",
+        "icon": "&#9888;&#65039;",
         "border_color": "#FD7E14",
         "action_bg": "#FFF8F0",
         "title": "Advertiser Concentration Risk — Cosmopolitan & ELLE",
@@ -756,7 +743,7 @@ INSIGHTS = [
         ),
     },
     {
-        "icon": "💡",
+        "icon": "&#128161;",
         "border_color": "#28A745",
         "action_bg": "#F0FFF4",
         "title": "Pitch-to-Pay Bottleneck Costing $2.1M Annually",
