@@ -107,32 +107,6 @@ streamlit run app.py
 
 The dashboard will open automatically at `http://localhost:8501`.
 
----
-
-## How to Deploy to Streamlit Community Cloud
-
-Streamlit Community Cloud is a free hosting platform for Streamlit apps directly connected to GitHub.
-
-**1. Push to GitHub**
-
-```bash
-git add .
-git commit -m "Initial deploy"
-git push origin main
-```
-
-**2. Connect to Streamlit Community Cloud**
-
-- Go to [share.streamlit.io](https://share.streamlit.io) and sign in with your GitHub account
-- Click **"New app"**
-- Select your repository, set the branch to `main`, and set the main file path to `hearst_revenue_dashboard/app.py`
-- Click **"Deploy"**
-
-**3. Share**
-
-Streamlit Community Cloud will provide a public URL (e.g. `https://<your-app>.streamlit.app`) within a few minutes. No server configuration required.
-
-> **Note:** The app uses an in-memory SQLite database that is re-created on each session, so no external database or credentials are needed for deployment.
 
 ---
 
